@@ -19,6 +19,12 @@ Monorepo for multiple projects.
 - **Maven ArtifactId:** `connectivity-smoke`
 - **Module Path:** `projects/connectivity-smoke`
 
+## Branch Model
+
+- `main`: stable/release branch
+- `develop`: daily integration branch
+- `feature/*`, `fix/*`, `hotfix/*`: work branches
+
 ## Run Remote Test
 
-Push to `main` (or run manually via GitHub Actions `workflow_dispatch`).
+CI triggers on push/PR for `main` and `develop` (or run manually via `workflow_dispatch`).
