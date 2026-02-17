@@ -5,9 +5,9 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.example</groupId>
-    <artifactId>codex-smoke-test</artifactId>
+    <artifactId>connectivity-smoke</artifactId>
     <version>1.0.0</version>
-    <name>codex-smoke-test</name>
+    <name>Codex Connectivity Smoke</name>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>

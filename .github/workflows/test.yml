@@ -22,4 +22,5 @@ jobs:
           cache: maven
 
       - name: Run tests
+        working-directory: projects/connectivity-smoke
         run: mvn -B test
