@@ -30,8 +30,9 @@ function filterSupplier (supplier, shopeePriceCny, filterCfg) {
   const minOrder = parseInt(supplier.min_order) || 999
   if (minOrder > cfg.maxMoq) return false
 
-  const score = parseFloat(supplier.shop_score) || 0
-  if (score < cfg.minScore) return false
+  const score = parseFloat(supplier.shop_score)
+  // 评分缺失按“未知”处理，不直接判失败
+  if (Number.isFinite(score) && score > 0 && score < cfg.minScore) return false
 
   const sales = parseInt(supplier.sales_30d) || 0
   if (sales < cfg.minSales) return false
@@ -59,7 +60,7 @@ function filterSuppliers (suppliers, shopeePriceCny) {
       reject = `进价${s.price}超限(≤${(shopeePriceCny * cfg.priceRatio).toFixed(2)})`
     } else if ((parseInt(s.min_order) || 999) > cfg.maxMoq) {
       reject = `起购量${s.min_order}超限(≤${cfg.maxMoq})`
-    } else if ((parseFloat(s.shop_score) || 0) < cfg.minScore) {
+    } else if (Number.isFinite(parseFloat(s.shop_score)) && parseFloat(s.shop_score) > 0 && parseFloat(s.shop_score) < cfg.minScore) {
       reject = `评分${s.shop_score}低于${cfg.minScore}`
     } else if ((parseInt(s.sales_30d) || 0) < cfg.minSales) {
       reject = `销量${s.sales_30d}低于${cfg.minSales}`

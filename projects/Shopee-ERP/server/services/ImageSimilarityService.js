@@ -6,12 +6,20 @@ const logger = require('../utils/logger')
 
 const HASH_SIZE = 8 // 8x8 = 64位 aHash
 
+async function normalizeImageToPngBuffer (input) {
+  return sharp(input, { failOn: 'none' })
+    .rotate()
+    .png()
+    .toBuffer()
+}
+
 /**
  * 计算图片的平均哈希（aHash）
  * 返回 64 位 BigInt
  */
 async function computeHash (imagePath) {
-  const { data } = await sharp(imagePath)
+  const normalized = await normalizeImageToPngBuffer(imagePath)
+  const { data } = await sharp(normalized)
     .resize(HASH_SIZE, HASH_SIZE, { fit: 'fill' })
     .grayscale()
     .raw()
@@ -45,19 +53,18 @@ async function computeSimilarity (localImagePath, remoteImageUrl) {
   try {
     const hash1 = await computeHash(localImagePath)
 
-    // 下载远程图片到临时文件
-    const tmpPath = localImagePath + '.tmp_compare'
     const resp = await axios({
       url: remoteImageUrl,
       responseType: 'arraybuffer',
       timeout: 8000
     })
-    fs.writeFileSync(tmpPath, resp.data)
+
+    const normalizedRemote = await normalizeImageToPngBuffer(Buffer.from(resp.data))
+    const tmpPath = localImagePath + '.tmp_compare.png'
+    fs.writeFileSync(tmpPath, normalizedRemote)
 
     let hash2
-    try {
-      hash2 = await computeHash(tmpPath)
-    } finally {
+    try { hash2 = await computeHash(tmpPath) } finally {
       try { fs.unlinkSync(tmpPath) } catch (_) {}
     }
 

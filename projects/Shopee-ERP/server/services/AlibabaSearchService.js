@@ -179,11 +179,88 @@ function isLoginRedirect (html) {
     html.includes('login.1688.com') ||
     html.includes('login.taobao.com') ||
     html.includes('member/signin') ||
+    html.includes('/_____tmd_____/punish') ||
     html.length < 8000
   )
 }
 
+function parseSalesVolume (text) {
+  const normalized = String(text || '').replace(/,/g, '').trim()
+  const match = normalized.match(/(\d+(?:\.\d+)?)(万|\+)?/)
+  if (!match) return 0
+  const base = parseFloat(match[1]) || 0
+  if (match[2] === '万') return Math.round(base * 10000)
+  return Math.round(base)
+}
+
+function extractJsonArrayByKey (html, key) {
+  const marker = `"${key}":[`
+  const start = html.indexOf(marker)
+  if (start === -1) return null
+
+  let i = start + marker.length - 1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (; i < html.length; i++) {
+    const ch = html[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (ch === '[') depth++
+    if (ch === ']') {
+      depth--
+      if (depth === 0) {
+        return html.slice(start + marker.length - 1, i + 1)
+      }
+    }
+  }
+  return null
+}
+
+function parseZwPageSuppliers (html) {
+  const arrayStr = extractJsonArrayByKey(html, 'listOffer')
+  if (!arrayStr) return []
+
+  let offers = []
+  try {
+    offers = JSON.parse(arrayStr)
+  } catch (err) {
+    logger.warn('Failed to parse 1688 zw listOffer JSON', { error: err.message })
+    return []
+  }
+
+  return offers.map(offer => {
+    const tags = Object.values(offer.offerTagMap || {})
+      .map(tag => tag?.tagName)
+      .filter(Boolean)
+
+    return {
+      title: offer.subject || offer.simpleSubject || '',
+      price: parseFloat(offer.price) || 0,
+      min_order: 1,
+      shop_name: offer.company || offer.loginId || '',
+      shop_score: 0,
+      sales_30d: parseSalesVolume(offer.saleVolume),
+      tags: JSON.stringify(tags),
+      product_url: offer.odUrl || offer.eurl || '',
+      image_url: offer.imgUrl || ''
+    }
+  }).filter(item => item.title || item.product_url)
+}
+
 function parseSuppliers (html) {
+  const zwSuppliers = parseZwPageSuppliers(html)
+  if (zwSuppliers.length > 0) return zwSuppliers
+
   const $ = cheerio.load(html)
   const suppliers = []
 
@@ -241,7 +318,7 @@ async function searchByKeyword (keyword, maxPages, cookie, proxyUrl) {
   const headers = buildHeaders(cookie)
 
   for (let p = 1; p <= maxPages; p++) {
-    const url = `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(keyword)}&n=y&page=${p}`
+    const url = `https://www.1688.com/zw/page.html?hpageId=old-sem-pc-list&keywords=${encodeURIComponent(keyword)}&page=${p}`
     try {
       await retry(async () => {
         const axiosConfig = {
