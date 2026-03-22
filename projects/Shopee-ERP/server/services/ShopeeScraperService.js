@@ -248,7 +248,9 @@ async function fetchPageProductsByHttp (pageUrl, proxyUrl, extraHeaders = {}) {
   }
   if (proxyUrl) axiosConfig.proxy = buildProxyConfig(proxyUrl)
   const resp = await axios(axiosConfig)
-  return parseProductsFromHtml(resp.data)
+  const products = parseProductsFromHtml(resp.data)
+  logger.info(`Fetched ${products.length} products from HTTP fallback`, { url: pageUrl })
+  return products
 }
 
 async function fetchPageProducts (browser, pageUrl, proxyUrl, extraHeaders = {}) {
@@ -314,8 +316,33 @@ async function fetchPageProducts (browser, pageUrl, proxyUrl, extraHeaders = {})
     logger.info(`Rendered page had no parsed products, fallback parsed ${fallbackProducts.length}`, { url: pageUrl })
     return fallbackProducts
   } catch (err) {
-    logger.warn('Rendered page scrape failed, fallback to raw HTML', { url: pageUrl, error: err.message })
-    return fetchPageProductsByHttp(pageUrl, proxyUrl, extraHeaders)
+    let debugInfo = {}
+    try {
+      const [pageTitle, currentUrl, userAgent, pageText] = await Promise.all([
+        page.title().catch(() => ''),
+        Promise.resolve(page.url()).catch(() => ''),
+        page.evaluate(() => navigator.userAgent).catch(() => ''),
+        page.evaluate(() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 500)).catch(() => '')
+      ])
+      debugInfo = {
+        pageTitle,
+        currentUrl,
+        userAgent,
+        pageTextPreview: pageText
+      }
+    } catch {}
+
+    logger.warn('Rendered page scrape failed, fallback to raw HTML', {
+      url: pageUrl,
+      error: err.message,
+      ...debugInfo
+    })
+    const fallbackProducts = await fetchPageProductsByHttp(pageUrl, proxyUrl, extraHeaders)
+    logger.info(`Using HTTP fallback results after rendered page failure`, {
+      url: pageUrl,
+      products: fallbackProducts.length
+    })
+    return fallbackProducts
   } finally {
     await page.close().catch(() => {})
   }
