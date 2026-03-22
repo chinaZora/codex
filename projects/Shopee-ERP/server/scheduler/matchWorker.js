@@ -66,13 +66,16 @@ async function runMatchJob (job) {
   sseEmitter.push({ type: 'match_progress', jobId: job.id, productId: product.id, progress: 5, message: '开始匹配...' })
 
   try {
-    const suppliers = await matchProduct(product, {
+    const result = await matchProduct(product, {
       isCancelled: () => signal.cancelled,
       onProgress: ({ progress, message }) => {
         updateJob({ progress })
         sseEmitter.push({ type: 'match_progress', jobId: job.id, productId: product.id, progress, message })
       }
     })
+    const suppliers = result?.suppliers || []
+    const searchTerms = Array.isArray(result?.searchTerms) ? result.searchTerms : []
+    updateJob({ search_terms: JSON.stringify(searchTerms) })
 
     if (signal.cancelled) {
       updateJob({ status: 'cancelled' })
@@ -111,6 +114,7 @@ async function runMatchJob (job) {
       jobId: job.id,
       productId: product.id,
       progress: 100,
+      searchTerms,
       resultCount: suppliers.length,
       message: `匹配完成，找到 ${suppliers.length} 个供应商`
     })

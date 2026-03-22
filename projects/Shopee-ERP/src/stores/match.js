@@ -6,6 +6,7 @@ import { useSseStore } from './sse'
 export const useMatchStore = defineStore('match', () => {
   const suppliers = ref([])
   const currentProductId = ref(null)
+  const currentSearchTerms = ref([])
   const jobProgress = reactive({})
 
   function initSse () {
@@ -37,7 +38,8 @@ export const useMatchStore = defineStore('match', () => {
   async function loadSuppliers (productId) {
     currentProductId.value = productId
     const res = await matchApi.suppliers(productId)
-    suppliers.value = res.data || []
+    suppliers.value = res.data?.suppliers || []
+    currentSearchTerms.value = res.data?.searchTerms || []
   }
 
   async function selectSupplier (supplierId, selected) {
@@ -47,5 +49,5 @@ export const useMatchStore = defineStore('match', () => {
     )
   }
 
-  return { suppliers, currentProductId, jobProgress, initSse, startMatch, loadSuppliers, selectSupplier }
+  return { suppliers, currentProductId, currentSearchTerms, jobProgress, initSse, startMatch, loadSuppliers, selectSupplier }
 })

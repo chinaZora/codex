@@ -37,8 +37,15 @@ function cleanKeyword (kw) {
   s = s.replace(/[\u0E00-\u0E7F]+/g, ' ')
   // 去括号内容（通常是促销描述："买4送2"）
   s = s.replace(/[(\[【〔][^)\]】〕]*[)\]】〕]/g, ' ')
+  // 去常见物流/时效噪音
+  s = s.replace(/\b\d+\s*-\s*\d+\s*(天|日|days?)\b/gi, ' ')
+  s = s.replace(/\b\d+\s*(天|日|days?)\b/gi, ' ')
+  s = s.replace(/(发货|送达|包邮|现货|速发|闪送|配送|shipping|delivery|free ship)/gi, ' ')
   // 只保留中文、英文字母、数字、常见连字符
   s = s.replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9\s-]/g, ' ')
+  // 去纯数字区间、孤立数字
+  s = s.replace(/\b\d+\s*-\s*\d+\b/g, ' ')
+  s = s.replace(/\b\d+\b/g, ' ')
   // 合并空格并裁剪
   s = s.replace(/\s+/g, ' ').trim()
   // 取前 30 字符
@@ -53,8 +60,31 @@ function extractCoreChinesePhrase (kw) {
   const matches = cleaned.match(/[\u4e00-\u9fff\u3400-\u4dbf]{2,}/g)
   if (!matches) return cleaned.slice(0, 20)
   // 取最长的中文片段（最能代表品类）
-  matches.sort((a, b) => b.length - a.length)
-  return matches[0].slice(0, 12)
+  const filtered = matches
+    .map(s => s.trim())
+    .filter(Boolean)
+    .filter(s => !/^(包邮|现货|发货|送达|饰品)$/.test(s))
+  if (filtered.length === 0) return cleaned.slice(0, 20)
+  filtered.sort((a, b) => b.length - a.length)
+  return filtered[0].slice(0, 12)
+}
+
+function deriveChineseTerms (text) {
+  const cleaned = cleanKeyword(text)
+  const matches = cleaned.match(/[\u4e00-\u9fff\u3400-\u4dbf]{2,}/g) || []
+  const terms = matches
+    .map(s => s.trim())
+    .filter(Boolean)
+    .filter(s => !/^(包邮|现货|发货|送达)$/.test(s))
+    .sort((a, b) => b.length - a.length)
+
+  const unique = []
+  for (const term of terms) {
+    if (unique.some(existing => existing.includes(term) || term.includes(existing))) continue
+    unique.push(term.slice(0, 12))
+    if (unique.length >= 3) break
+  }
+  return unique
 }
 
 /**
@@ -64,52 +94,63 @@ function extractCoreChinesePhrase (kw) {
  */
 async function extractSearchTerms (product) {
   const db = require('../db/index')
+  const { translateAll, getLlmConfig } = require('./TranslatorService')
+  const llm = getLlmConfig()
+  const sourceText = product.title_original || product.title_cn || ''
 
-  // 1. 尝试解析 DB 中已有的 keywords
+  // 1. 读取 DB 中已有的 keywords（仅作为兜底，不再优先于模型）
   let stored = []
   try { stored = JSON.parse(product.keywords || '[]') } catch {}
 
   // 清洗后的中文关键词
   const cleanedStored = stored
-    .map(k => cleanKeyword(k))
+    .flatMap(k => deriveChineseTerms(k))
     .filter(k => hasChinese(k) && k.length >= 2)
+  // 2. 优先用模型把原始标题清洗成适合 1688 搜索的中文关键词
+  if (sourceText && llm.apiKey) {
+    logger.info('Generating search terms via LLM for 1688 match', {
+      productId: product.id,
+      provider: llm.provider,
+      model: llm.model
+    })
 
-  if (cleanedStored.length > 0) return cleanedStored
+    try {
+      const results = await translateAll([sourceText])
+      const r = results[0]
+      if (r && (r.title_cn || r.keywords)) {
+        const newTitleCn = r.title_cn && hasChinese(r.title_cn) ? r.title_cn : (product.title_cn || '')
+        const newKeywords = Array.isArray(r.keywords) ? r.keywords : []
+        db.prepare("UPDATE shopee_products SET title_cn=?, keywords=?, updated_at=datetime('now') WHERE id=?")
+          .run(newTitleCn, JSON.stringify(newKeywords), product.id)
 
-  // 2. title_cn 本身如果是中文，可以直接用
-  const titleCn = product.title_cn || ''
-  if (hasChinese(titleCn) && !hasThai(titleCn)) {
-    const core = extractCoreChinesePhrase(titleCn)
-    if (core.length >= 2) return [core]
+        const llmTerms = newKeywords
+          .flatMap(k => deriveChineseTerms(k))
+          .filter(k => hasChinese(k) && k.length >= 2)
+        if (llmTerms.length > 0) return llmTerms
+
+        const titleTerms = deriveChineseTerms(newTitleCn)
+        if (titleTerms.length > 0) return titleTerms
+      }
+    } catch (err) {
+      logger.warn('LLM keyword generation failed, falling back to heuristic extraction', {
+        productId: product.id,
+        error: err.message
+      })
+    }
   }
 
-  // 3. 需要重新翻译
-  logger.info('Keywords/title contain no Chinese, re-translating for 1688 match', { productId: product.id })
-  const { translateAll } = require('./TranslatorService')
-  const sourceText = product.title_original || titleCn || ''
-  if (!sourceText) return []
+  // 3. 再回退到旧缓存关键词
+  if (cleanedStored.length > 0) return cleanedStored
 
-  try {
-    const results = await translateAll([sourceText])
-    const r = results[0]
-    if (r && (r.title_cn || r.keywords)) {
-      // 回写数据库，让下次直接命中缓存
-      const newTitleCn = r.title_cn && hasChinese(r.title_cn) ? r.title_cn : titleCn
-      const newKeywords = Array.isArray(r.keywords) ? r.keywords : []
-      db.prepare("UPDATE shopee_products SET title_cn=?, keywords=?, updated_at=datetime('now') WHERE id=?")
-        .run(newTitleCn, JSON.stringify(newKeywords), product.id)
-
-      const fresh = newKeywords
-        .map(k => cleanKeyword(k))
-        .filter(k => hasChinese(k) && k.length >= 2)
-      if (fresh.length > 0) return fresh
-
-      // keywords 仍然为空，用 title_cn 的核心中文短语
-      const core = extractCoreChinesePhrase(newTitleCn)
-      if (core.length >= 2) return [core]
-    }
-  } catch (err) {
-    logger.warn('Re-translation failed', { productId: product.id, error: err.message })
+  // 4. 没配模型或模型失败时，再用本地规则从 title_cn / 原文里兜底抽词
+  const titleCn = product.title_cn || ''
+  if (hasChinese(titleCn) && !hasThai(titleCn)) {
+    const titleTerms = deriveChineseTerms(titleCn)
+    if (titleTerms.length > 0) return titleTerms
+  }
+  if (sourceText) {
+    const sourceTerms = deriveChineseTerms(sourceText)
+    if (sourceTerms.length > 0) return sourceTerms
   }
 
   return []
@@ -255,7 +296,7 @@ async function matchProduct (product, callbacks = {}) {
 
   if (searchTerms.length === 0) {
     logger.warn('No usable Chinese keywords — product cannot be matched', { productId: product.id, title: product.title_original })
-    return []
+    return { suppliers: [], searchTerms: [] }
   }
 
   logger.info('1688 search terms', { productId: product.id, terms: searchTerms })
@@ -277,7 +318,7 @@ async function matchProduct (product, callbacks = {}) {
     } catch (err) {
       if (err.message.startsWith('LOGIN_REQUIRED')) {
         logger.error('1688 login required', { productId: product.id })
-        return []
+        return { suppliers: [], searchTerms }
       }
       logger.warn('Keyword search failed', { term, error: err.message })
     }
@@ -332,10 +373,13 @@ async function matchProduct (product, callbacks = {}) {
     }))
   )
 
-  return suppliersWithScore
+  return {
+    searchTerms,
+    suppliers: suppliersWithScore
     .filter(Boolean)
     .filter(s => s.image_similarity >= 0.3 || s.image_similarity < 0)
     .sort((a, b) => b.composite_score - a.composite_score)
+  }
 }
 
 module.exports = { matchProduct }

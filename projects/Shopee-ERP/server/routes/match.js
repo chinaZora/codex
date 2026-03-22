@@ -58,7 +58,12 @@ router.get('/suppliers/:shopeeProductId', (req, res) => {
   const suppliers = db.prepare(
     'SELECT * FROM alibaba_suppliers WHERE shopee_product_id=? ORDER BY composite_score DESC'
   ).all(req.params.shopeeProductId)
-  res.json({ code: 200, data: suppliers })
+  const latestJob = db.prepare(
+    'SELECT search_terms FROM match_jobs WHERE shopee_product_id=? ORDER BY created_at DESC LIMIT 1'
+  ).get(req.params.shopeeProductId)
+  let searchTerms = []
+  try { searchTerms = JSON.parse(latestJob?.search_terms || '[]') } catch {}
+  res.json({ code: 200, data: { suppliers, searchTerms } })
 })
 
 module.exports = router

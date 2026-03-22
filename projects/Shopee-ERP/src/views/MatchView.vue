@@ -67,9 +67,14 @@
             <div style="display:flex;gap:12px;margin-bottom:16px;padding:12px;background:#f8f8f8;border-radius:8px">
               <el-image :src="currentProduct.image_path || currentProduct.image_url" style="width:80px;height:80px;object-fit:cover;border-radius:6px" />
               <div>
-                <div style="font-weight:600;font-size:14px">{{ currentProduct.title_cn }}</div>
+                <div style="font-weight:600;font-size:14px">{{ currentProduct.title_cn || currentProduct.title_original }}</div>
                 <el-tag>售价 ฿{{ currentProduct.price_thb }}</el-tag>
                 <el-tag type="warning" style="margin-left:6px">≈¥{{ currentProduct.price_cny }}</el-tag>
+                <div style="margin-top:8px;font-size:12px;color:#666">
+                  实际搜索词：
+                  <span v-if="currentSearchTerms.length === 0">暂无</span>
+                  <el-tag v-for="term in currentSearchTerms" :key="term" size="small" style="margin-left:6px">{{ term }}</el-tag>
+                </div>
               </div>
             </div>
 
@@ -164,6 +169,7 @@ const products = computed(() => crawlStore.products)
 const total = computed(() => crawlStore.productTotal)
 const loading = computed(() => crawlStore.loading)
 const suppliers = computed(() => matchStore.suppliers)
+const currentSearchTerms = computed(() => matchStore.currentSearchTerms)
 const currentProduct = ref(null)
 const checkedIds = ref([])
 const matching = ref(false)

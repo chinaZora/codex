@@ -162,6 +162,13 @@ function runMigrations () {
     // 列已存在则忽略
   }
 
+  // 迁移：记录匹配任务最终使用的搜索词
+  try {
+    db.exec("ALTER TABLE match_jobs ADD COLUMN search_terms TEXT")
+  } catch (e) {
+    // 列已存在则忽略
+  }
+
   logger.info('Database migrations completed')
 }
 
