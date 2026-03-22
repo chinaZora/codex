@@ -4,9 +4,11 @@ const { retry } = require('../utils/retry')
 const { getConfig } = require('./ConfigService')
 
 const DEEPSEEK_API = 'https://api.deepseek.com/chat/completions'
+const OPENAI_API = 'https://api.openai.com/v1/chat/completions'
+const ALIBABA_API = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
 const BATCH_SIZE = 20
 
-const SYSTEM_PROMPT = `你是跨境电商选品专家，精通1688批发平台搜索规律。`
+const SYSTEM_PROMPT = '你是跨境电商选品专家，精通1688批发平台搜索规律。'
 
 function buildUserPrompt (titles) {
   return `对以下泰文/英文商品标题，请完成：
@@ -23,11 +25,7 @@ function buildUserPrompt (titles) {
 [{"title_cn":"中文标题","keywords":["关键词1","关键词2","关键词3"]},...]`
 }
 
-/**
- * 解析 DeepSeek 返回内容（容错处理）
- */
 function parseResponse (content, count) {
-  // 尝试提取 JSON 代码块
   const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/)
   const jsonStr = codeBlockMatch ? codeBlockMatch[1].trim() : content.trim()
 
@@ -36,7 +34,6 @@ function parseResponse (content, count) {
     if (Array.isArray(parsed) && parsed.length === count) return parsed
   } catch (_) {}
 
-  // 尝试提取第一个 JSON 数组
   const arrMatch = jsonStr.match(/\[[\s\S]*\]/)
   if (arrMatch) {
     try {
@@ -48,59 +45,92 @@ function parseResponse (content, count) {
   return null
 }
 
-/**
- * 降级结果：title_cn 保留原文，keywords 为 [原文]
- */
 function fallbackResult (titles) {
   return titles.map(t => ({ title_cn: t, keywords: [t] }))
 }
 
-/**
- * 翻译并提取关键词（批量，每批最多 BATCH_SIZE 条）
- * @param {string[]} titles - 原文标题数组
- * @returns {Array<{title_cn, keywords}>}
- */
+function getLlmConfig (override = {}) {
+  const provider = override.provider || getConfig('llm_provider') || 'deepseek'
+  if (provider === 'openai') {
+    return {
+      provider,
+      apiKey: override.apiKey || getConfig('openai_api_key'),
+      model: override.model || getConfig('openai_model') || 'gpt-4.1',
+      endpoint: OPENAI_API
+    }
+  }
+
+  if (provider === 'alibaba') {
+    return {
+      provider,
+      apiKey: override.apiKey || getConfig('alibaba_api_key'),
+      model: override.model || getConfig('alibaba_model') || 'qwen-plus',
+      endpoint: override.endpoint || getConfig('alibaba_endpoint') || ALIBABA_API
+    }
+  }
+
+  return {
+    provider: 'deepseek',
+    apiKey: override.apiKey || getConfig('deepseek_api_key'),
+    model: override.model || 'deepseek-chat',
+    endpoint: DEEPSEEK_API
+  }
+}
+
+function buildHeaders (apiKey) {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json'
+  }
+}
+
+async function requestChatCompletion ({ endpoint, apiKey, model, messages, maxTokens = 2000 }) {
+  const resp = await axios.post(endpoint, {
+    model,
+    messages,
+    temperature: 0.1,
+    max_tokens: maxTokens
+  }, {
+    headers: buildHeaders(apiKey),
+    timeout: 30000
+  })
+
+  return resp.data?.choices?.[0]?.message?.content || ''
+}
+
 async function translateBatch (titles) {
-  const apiKey = getConfig('deepseek_api_key')
-  if (!apiKey) {
-    logger.warn('DeepSeek API key not configured, using fallback')
+  const llm = getLlmConfig()
+  if (!llm.apiKey) {
+    logger.warn(`${llm.provider} API key not configured, using fallback`)
     return fallbackResult(titles)
   }
 
   try {
-    const result = await retry(async () => {
-      const resp = await axios.post(DEEPSEEK_API, {
-        model: 'deepseek-chat',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: buildUserPrompt(titles) }
-        ],
-        temperature: 0.1,
-        max_tokens: 2000
-      }, {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      })
-      return resp.data.choices[0].message.content
-    }, { retries: 2, baseDelay: 1000, onRetry: (n, e) => logger.warn(`DeepSeek retry ${n}`, { error: e.message }) })
+    const result = await retry(async () => requestChatCompletion({
+      endpoint: llm.endpoint,
+      apiKey: llm.apiKey,
+      model: llm.model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: buildUserPrompt(titles) }
+      ]
+    }), {
+      retries: 2,
+      baseDelay: 1000,
+      onRetry: (n, e) => logger.warn(`${llm.provider} retry ${n}`, { error: e.message })
+    })
 
     const parsed = parseResponse(result, titles.length)
     if (parsed) return parsed
 
-    logger.warn('DeepSeek returned unparseable JSON, using fallback')
+    logger.warn(`${llm.provider} returned unparseable JSON, using fallback`)
     return fallbackResult(titles)
   } catch (err) {
-    logger.error('DeepSeek translation failed', { error: err.message })
+    logger.error(`${llm.provider} translation failed`, { error: err.message })
     return fallbackResult(titles)
   }
 }
 
-/**
- * 分批翻译大量标题
- */
 async function translateAll (titles) {
   const results = []
   for (let i = 0; i < titles.length; i += BATCH_SIZE) {
@@ -111,23 +141,19 @@ async function translateAll (titles) {
   return results
 }
 
-/**
- * 测试 API Key 连通性
- * @param {string} [tempKey] - 可选临时 key（前端未保存时使用）
- */
-async function testConnection (tempKey) {
-  const apiKey = tempKey || getConfig('deepseek_api_key')
-  if (!apiKey) throw new Error('API Key 未配置')
+async function testConnection ({ provider, apiKey, model, endpoint } = {}) {
+  const llm = getLlmConfig({ provider, apiKey, model, endpoint })
+  if (!llm.apiKey) throw new Error('API Key 未配置')
+
   const start = Date.now()
-  await axios.post(DEEPSEEK_API, {
-    model: 'deepseek-chat',
+  await requestChatCompletion({
+    endpoint: llm.endpoint,
+    apiKey: llm.apiKey,
+    model: llm.model,
     messages: [{ role: 'user', content: '你好' }],
-    max_tokens: 10
-  }, {
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    timeout: 10000
+    maxTokens: 10
   })
-  return { ok: true, latencyMs: Date.now() - start }
+  return { ok: true, latencyMs: Date.now() - start, provider: llm.provider, model: llm.model }
 }
 
-module.exports = { translateAll, testConnection }
+module.exports = { translateAll, testConnection, getLlmConfig }

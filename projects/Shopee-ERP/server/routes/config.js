@@ -27,12 +27,15 @@ router.put('/', (req, res) => {
   }
 })
 
-// POST /api/config/test-connection — 测试 DeepSeek API 连通性
+// POST /api/config/test-connection — 测试翻译服务 API 连通性
 router.post('/test-connection', async (req, res) => {
   try {
-    // 支持前端传入临时 apiKey（未保存的情况下也可测试）
-    const tempKey = req.body?.apiKey
-    const result = await testConnection(tempKey)
+    const result = await testConnection({
+      provider: req.body?.provider,
+      apiKey: req.body?.apiKey,
+      model: req.body?.model,
+      endpoint: req.body?.endpoint
+    })
     res.json({ code: 200, data: result })
   } catch (err) {
     res.status(400).json({ code: 400, data: { ok: false, error: err.message } })

@@ -10,13 +10,13 @@ function getConfig (key) {
 
 /**
  * 获取所有配置，返回 { key: value } 对象
- * deepseek_api_key 脱敏处理
+ * API Key 脱敏处理
  */
 function getAllConfig () {
   const rows = db.prepare('SELECT key, value FROM config').all()
   const result = {}
   for (const row of rows) {
-    if (row.key === 'deepseek_api_key' && row.value && row.value.length > 4) {
+    if (['deepseek_api_key', 'openai_api_key', 'alibaba_api_key'].includes(row.key) && row.value && row.value.length > 4) {
       result[row.key] = '****' + row.value.slice(-4)
     } else {
       result[row.key] = row.value
@@ -48,8 +48,13 @@ function setConfigs (kvMap) {
     "INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now')) " +
     "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
   )
+  const sensitiveKeys = new Set(['deepseek_api_key', 'openai_api_key', 'alibaba_api_key'])
   const tx = db.transaction((entries) => {
-    for (const [k, v] of entries) stmt.run(k, String(v))
+    for (const [k, v] of entries) {
+      const value = String(v)
+      if (sensitiveKeys.has(k) && value.startsWith('****')) continue
+      stmt.run(k, value)
+    }
   })
   tx(Object.entries(kvMap))
 }

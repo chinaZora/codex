@@ -12,8 +12,38 @@
           <span style="font-weight:600">基础配置</span>
         </template>
         <el-form :model="cfg" label-width="160px">
-          <el-form-item label="DeepSeek API Key">
+          <el-form-item label="翻译服务商">
+            <el-select v-model="cfg.llm_provider" style="width:220px">
+              <el-option label="DeepSeek" value="deepseek" />
+              <el-option label="OpenAI" value="openai" />
+              <el-option label="阿里百炼" value="alibaba" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="DeepSeek API Key" v-if="cfg.llm_provider === 'deepseek'">
             <el-input v-model="cfg.deepseek_api_key" placeholder="sk-..." show-password style="width:360px" />
+            <el-button style="margin-left:8px" @click="testApi" :loading="testing">测试连接</el-button>
+            <el-tag v-if="testResult !== null" :type="testResult ? 'success' : 'danger'" style="margin-left:8px">
+              {{ testResult ? '连接成功' : '连接失败' }}
+            </el-tag>
+          </el-form-item>
+          <el-form-item label="OpenAI API Key" v-if="cfg.llm_provider === 'openai'">
+            <el-input v-model="cfg.openai_api_key" placeholder="sk-..." show-password style="width:360px" />
+          </el-form-item>
+          <el-form-item label="OpenAI 模型" v-if="cfg.llm_provider === 'openai'">
+            <el-input v-model="cfg.openai_model" placeholder="gpt-4.1" style="width:220px" />
+            <el-button style="margin-left:8px" @click="testApi" :loading="testing">测试连接</el-button>
+            <el-tag v-if="testResult !== null" :type="testResult ? 'success' : 'danger'" style="margin-left:8px">
+              {{ testResult ? '连接成功' : '连接失败' }}
+            </el-tag>
+          </el-form-item>
+          <el-form-item label="阿里 API Key" v-if="cfg.llm_provider === 'alibaba'">
+            <el-input v-model="cfg.alibaba_api_key" placeholder="sk-..." show-password style="width:360px" />
+          </el-form-item>
+          <el-form-item label="阿里模型" v-if="cfg.llm_provider === 'alibaba'">
+            <el-input v-model="cfg.alibaba_model" placeholder="qwen-plus / 你的 codeplan 模型名" style="width:260px" />
+          </el-form-item>
+          <el-form-item label="阿里接口地址" v-if="cfg.llm_provider === 'alibaba'">
+            <el-input v-model="cfg.alibaba_endpoint" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" style="width:500px" />
             <el-button style="margin-left:8px" @click="testApi" :loading="testing">测试连接</el-button>
             <el-tag v-if="testResult !== null" :type="testResult ? 'success' : 'danger'" style="margin-left:8px">
               {{ testResult ? '连接成功' : '连接失败' }}
@@ -173,7 +203,13 @@ const testing = ref(false)
 const testResult = ref(null)
 
 const cfg = ref({
+  llm_provider: 'deepseek',
   deepseek_api_key: '',
+  openai_api_key: '',
+  openai_model: 'gpt-4.1',
+  alibaba_api_key: '',
+  alibaba_model: 'qwen-plus',
+  alibaba_endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
   exchange_rate: 0.19,
   proxy_url: '',
   alibaba_cookie: '',
@@ -234,11 +270,19 @@ async function saveConfig () {
 }
 
 async function testApi () {
-  if (!cfg.value.deepseek_api_key) return ElMessage.warning('请先输入 API Key')
+  const provider = cfg.value.llm_provider || 'deepseek'
+  const apiKey = provider === 'openai'
+    ? cfg.value.openai_api_key
+    : (provider === 'alibaba' ? cfg.value.alibaba_api_key : cfg.value.deepseek_api_key)
+  const model = provider === 'openai'
+    ? cfg.value.openai_model
+    : (provider === 'alibaba' ? cfg.value.alibaba_model : undefined)
+  const endpoint = provider === 'alibaba' ? cfg.value.alibaba_endpoint : undefined
+  if (!apiKey) return ElMessage.warning('请先输入 API Key')
   testing.value = true
   testResult.value = null
   try {
-    const res = await configApi.testConnection(cfg.value.deepseek_api_key)
+    const res = await configApi.testConnection({ provider, apiKey, model, endpoint })
     testResult.value = res.data?.ok === true
     if (!testResult.value) ElMessage.error(res.data?.error || '连接失败')
   } catch {

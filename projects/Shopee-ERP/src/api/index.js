@@ -18,7 +18,7 @@ http.interceptors.response.use(
 export const configApi = {
   getAll: () => http.get('/config'),
   setAll: (data) => http.put('/config', data),
-  testConnection: (apiKey) => http.post('/config/test-connection', { apiKey })
+  testConnection: (payload) => http.post('/config/test-connection', payload)
 }
 
 // 账号

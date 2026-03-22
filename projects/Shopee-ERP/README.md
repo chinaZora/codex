@@ -14,7 +14,7 @@ Shopee-ERP 是一个面向跨境电商选品与同款匹配场景的本地桌面
 
 - 采集 Shopee 商品列表
 - 识别标题、价格、销量与详情链接
-- 生成中文标题和搜索关键词
+- 在匹配阶段按需生成中文标题和搜索关键词
 - 匹配 1688 同款供应商
 - 批量编辑商品信息
 - 导出 Excel 结果
@@ -40,7 +40,7 @@ Shopee-ERP 是一个面向跨境电商选品与同款匹配场景的本地桌面
 3. 批量编辑  
    对已采集商品批量修改标题、价格等字段。
 4. 系统设置  
-   配置 DeepSeek API Key、1688 Cookie、代理地址、汇率和筛选参数。
+   配置翻译服务商（DeepSeek / OpenAI / 阿里百炼）、1688 Cookie、代理地址、汇率和筛选参数。
 
 ### 快速开始
 
@@ -91,11 +91,26 @@ npm run launch
 
 首次启动后，建议在“系统设置”中配置：
 
-- DeepSeek API Key
+- 翻译服务商与对应 API Key
+- OpenAI / 阿里模型名（如需）
 - 1688 Cookie
 - 可选代理地址
 
 未配置时，部分翻译、关键词提取和 1688 匹配能力会受限。
+
+### 当前行为说明
+
+- 采集阶段默认保留原文标题，不在抓取时预生成 `title_cn`
+- 进入 1688 匹配时，系统会按需调用翻译服务生成中文标题和搜索关键词
+- Shopee 抓取优先尝试浏览器渲染结果，失败时会回退到原始 HTML 解析
+- 1688 比价/匹配依赖有效的 1688 登录 Cookie，否则会返回登录页
+
+### LLM 配置说明
+
+- `DeepSeek`：默认模型 `deepseek-chat`
+- `OpenAI`：默认模型 `gpt-4.1`
+- `阿里百炼`：默认兼容接口为 `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
+- 阿里默认模型为 `qwen-plus`，也可以在系统设置中填写你自己的模型名
 
 ### 项目结构
 
@@ -123,7 +138,7 @@ This project brings several sourcing tasks into one local application:
 
 - collect Shopee product listings
 - parse titles, prices, sales, and detail links
-- generate Chinese titles and search keywords
+- generate Chinese titles and keywords on demand during matching
 - match similar suppliers from 1688
 - batch edit collected products
 - export results to Excel
@@ -149,7 +164,7 @@ The current app includes 4 main pages:
 3. Batch Editing  
    Update selected product fields in bulk.
 4. Settings  
-   Configure DeepSeek API Key, 1688 Cookie, proxy, exchange rate, and filtering rules.
+   Configure the translation provider (DeepSeek / OpenAI / Alibaba DashScope), 1688 Cookie, proxy, exchange rate, and filtering rules.
 
 ### Quick Start
 
@@ -200,8 +215,16 @@ npm run launch
 
 After startup, it is recommended to configure:
 
-- DeepSeek API Key
+- translation provider and matching API key
+- optional OpenAI / Alibaba model
 - 1688 Cookie
 - optional proxy URL
 
 Without them, some translation, keyword extraction, and supplier-matching features may be limited.
+
+### Current Behavior
+
+- Collection keeps the original title and does not pre-generate `title_cn` during crawling.
+- Chinese titles and search keywords are generated on demand during 1688 matching.
+- Shopee crawling first tries rendered-page extraction and falls back to raw HTML parsing when needed.
+- 1688 matching requires a valid 1688 login cookie, otherwise 1688 returns a login page.

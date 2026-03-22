@@ -109,7 +109,13 @@ function runMigrations () {
 
   // 预置默认配置（INSERT OR IGNORE 不覆盖已有值）
   const defaults = {
+    llm_provider: 'deepseek',
     deepseek_api_key: '',
+    openai_api_key: '',
+    openai_model: 'gpt-4.1',
+    alibaba_api_key: '',
+    alibaba_model: 'qwen-plus',
+    alibaba_endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
     exchange_rate: '0.19',
     filter_price_ratio: '0.6',
     filter_min_score: '4.0',
