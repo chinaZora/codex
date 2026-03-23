@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-node scripts\launch.js
+node server\app.js
