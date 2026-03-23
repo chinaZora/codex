@@ -214,6 +214,52 @@ function parseSuppliers (html) {
   return suppliers
 }
 
+async function searchByKeywordPuppeteer (keyword, pageNum, cookie, proxyUrl, browserRef) {
+  const url = `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(keyword)}&n=y&page=${pageNum}`
+  let page = null
+  try {
+    // Lazily launch browser on first Puppeteer need
+    if (!browserRef.instance) {
+      const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+      // Note: pass raw proxyUrl (e.g. "http://host:8080") — Chromium --proxy-server accepts host:port
+      // This intentionally differs from ShopeeScraperService which strips the port (a limitation there)
+      if (proxyUrl) args.push(`--proxy-server=${proxyUrl}`)
+      browserRef.instance = await puppeteer.launch({ headless: 'new', args })
+    }
+
+    page = await browserRef.instance.newPage()
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+
+    // Inject 1688 cookie — leading dot covers s.1688.com and all subdomains
+    if (cookie) {
+      const cookies = parseCookieHeader(cookie)
+      if (cookies.length > 0) {
+        await page.setCookie(...cookies.map(c => ({ ...c, domain: '.1688.com', path: '/' })))
+      }
+    }
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+    // Soft wait for product container — proceed even if not found
+    await page.waitForSelector('[data-offer-id], .list-item, [class*="offerlist-item"]', { timeout: 15000 })
+      .catch(() => {})
+
+    const html = await page.content()
+
+    if (isLoginRedirect(html)) {
+      throw new Error('LOGIN_REQUIRED: 1688 返回登录页，请在系统设置中配置有效的 1688 Cookie')
+    }
+
+    return parseSuppliers(html)
+  } catch (err) {
+    if (err.message.startsWith('LOGIN_REQUIRED')) throw err
+    logger.warn('1688 Puppeteer page failed', { keyword, pageNum, error: err.message })
+    return []
+  } finally {
+    if (page) await page.close().catch(() => {})
+  }
+}
+
 async function searchByKeyword (keyword, maxPages, cookie, proxyUrl) {
   const results = []
   const headers = buildHeaders(cookie)
