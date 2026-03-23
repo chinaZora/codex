@@ -260,7 +260,7 @@ async function searchByKeywordPuppeteer (keyword, pageNum, cookie, proxyUrl, bro
   }
 }
 
-async function searchByKeyword (keyword, maxPages, cookie, proxyUrl) {
+async function searchByKeyword (keyword, maxPages, cookie, proxyUrl, browserRef = {}) {
   const results = []
   const headers = buildHeaders(cookie)
 
@@ -284,7 +284,15 @@ async function searchByKeyword (keyword, maxPages, cookie, proxyUrl) {
           throw new Error('LOGIN_REQUIRED: 1688 返回登录页，请在系统设置中配置有效的 1688 Cookie')
         }
 
-        const items = parseSuppliers(html)
+        // IMPORTANT: must be `let` (not `const`) — reassigned by Puppeteer fallback below
+        let items = parseSuppliers(html)
+
+        // SPA fallback: overseas IPs get a React shell with no product data
+        if (items.length === 0 && isSpaShell(html)) {
+          logger.info(`1688 SPA detected, falling back to Puppeteer for keyword="${keyword}" page ${p}`)
+          items = await searchByKeywordPuppeteer(keyword, p, cookie, proxyUrl, browserRef)
+        }
+
         results.push(...items)
         logger.info(`1688 keyword="${keyword}" page ${p}: ${items.length} suppliers`)
 
