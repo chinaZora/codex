@@ -336,26 +336,31 @@ async function matchProduct (product, callbacks = {}) {
   // ── 2. 多关键词搜索：主词3页 + 次词2页 + 第三词1页
   const pageLimits = [3, 2, 1]
   let rawResults = []
+  const browserRef = { instance: null }
 
-  for (let i = 0; i < Math.min(searchTerms.length, 3); i++) {
-    if (isCancelled()) break
-    const term = searchTerms[i]
-    const pages = pageLimits[i] || 1
-    onProgress({ progress: 10 + i * 8, message: `搜索"${term}"...` })
+  try {
+    for (let i = 0; i < Math.min(searchTerms.length, 3); i++) {
+      if (isCancelled()) break
+      const term = searchTerms[i]
+      const pages = pageLimits[i] || 1
+      onProgress({ progress: 10 + i * 8, message: `搜索"${term}"...` })
 
-    try {
-      const hits = await searchByKeyword(term, pages, alibabaCookie, proxyUrl)
-      rawResults.push(...hits)
-      logger.info(`Keyword "${term}": ${hits.length} raw results`)
-    } catch (err) {
-      if (err.message.startsWith('LOGIN_REQUIRED')) {
-        logger.error('1688 login required', { productId: product.id })
-        return []
+      try {
+        const hits = await searchByKeyword(term, pages, alibabaCookie, proxyUrl, browserRef)
+        rawResults.push(...hits)
+        logger.info(`Keyword "${term}": ${hits.length} raw results`)
+      } catch (err) {
+        if (err.message.startsWith('LOGIN_REQUIRED')) {
+          logger.error('1688 login required', { productId: product.id })
+          return []
+        }
+        logger.warn('Keyword search failed', { term, error: err.message })
       }
-      logger.warn('Keyword search failed', { term, error: err.message })
-    }
 
-    if (rawResults.length >= 60) break // 已够用，不继续翻页
+      if (rawResults.length >= 60) break // 已够用，不继续翻页
+    }
+  } finally {
+    if (browserRef.instance) await browserRef.instance.close().catch(() => {})
   }
 
   // ── 3. 按 product_url 去重
