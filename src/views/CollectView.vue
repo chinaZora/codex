@@ -73,6 +73,7 @@
               <el-option label="价格" value="price_thb" />
             </el-select>
             <el-button icon="Refresh" @click="loadProducts">刷新</el-button>
+            <el-button icon="Delete" type="danger" @click="clearAllProducts" :loading="clearingAll">清空所有</el-button>
           </div>
         </div>
       </template>
@@ -162,6 +163,7 @@ const filterStatus = ref('')
 const sortBy = ref('created_at')
 const page = ref(1)
 const pageSize = ref(50)
+const clearingAll = ref(false)
 
 const products = computed(() => crawlStore.products)
 const productTotal = computed(() => crawlStore.productTotal)
@@ -264,5 +266,51 @@ async function batchDelete () {
   ElMessage.success(`已删除 ${count} 件商品`)
   selected.value = []
   await loadProducts()
+}
+
+// 一键清空所有商品
+async function clearAllProducts () {
+  await ElMessageBox.confirm(
+    '确认清空所有商品？此操作会删除所有采集的商品、匹配结果、利润记录，且不可恢复！',
+    '清空所有商品',
+    {
+      type: 'warning',
+      confirmButtonText: '确认清空',
+      confirmButtonClass: 'el-button--danger',
+      cancelButtonText: '取消',
+      dangerouslyUseHTMLString: true
+    }
+  )
+
+  clearingAll.value = true
+  try {
+    // 先获取所有商品ID
+    let allIds = []
+    let currentPage = 1
+    const pageSize = 1000
+
+    while (true) {
+      const res = await crawlApi.products({ page: currentPage, pageSize })
+      const products = res.data?.list || []
+      if (products.length === 0) break
+      allIds = allIds.concat(products.map(p => p.id))
+      currentPage++
+    }
+
+    if (allIds.length === 0) {
+      ElMessage.info('当前没有商品可以清空')
+      return
+    }
+
+    // 批量删除
+    await crawlApi.batchDeleteProducts(allIds)
+    ElMessage.success(`已成功清空 ${allIds.length} 件商品`)
+    page.value = 1
+    await loadProducts()
+  } catch (err) {
+    ElMessage.error('清空失败：' + (err.message || '未知错误'))
+  } finally {
+    clearingAll.value = false
+  }
 }
 </script>
