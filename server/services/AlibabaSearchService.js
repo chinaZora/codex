@@ -6,11 +6,68 @@ const { retry, sleep, createSemaphore } = require('../utils/retry')
 const { getConfig } = require('./ConfigService')
 const { filterSuppliers } = require('./SupplierFilterService')
 const { computeSimilarity, computeCompositeScore } = require('./ImageSimilarityService')
+const { translateAll } = require('./TranslatorService')
+const db = require('../db/index')
 const path = require('path')
 const fs = require('fs')
 
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/shopee')
 const imgLimit = createSemaphore(10)
+
+// User-Agent池，20+不同浏览器/版本
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.2210.121 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.2210.91',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 OPR/106.0.0.0',
+  'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Brave/1.60.118',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/121.0.2277.106 Safari/537.36'
+]
+
+// Cookie池：支持配置多个Cookie轮询
+let cookiePool = []
+let currentCookieIndex = 0
+
+// 初始化Cookie池
+function initCookiePool () {
+  const cookieConfig = getConfig('alibaba_cookie') || ''
+  cookiePool = cookieConfig.split(/\|\|/).map(c => c.trim()).filter(Boolean)
+  if (cookiePool.length === 0) cookiePool.push('')
+  currentCookieIndex = Math.floor(Math.random() * cookiePool.length)
+}
+
+// 获取下一个Cookie（轮询）
+function getNextCookie () {
+  if (cookiePool.length === 0) initCookiePool()
+  const cookie = cookiePool[currentCookieIndex]
+  currentCookieIndex = (currentCookieIndex + 1) % cookiePool.length
+  return cookie
+}
+
+// 获取随机User-Agent
+function getRandomUA () {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+}
+
+// 动态请求间隔：基础间隔+随机抖动，失败时指数退避
+function getRequestDelay (retryCount = 0) {
+  const base = 1500 + Math.random() * 1500 // 1500-3000ms
+  return base * Math.pow(2, retryCount) // 指数退避
+}
 
 // ──────────────────────────────────────────────
 // 关键词工具函数
@@ -27,19 +84,27 @@ function hasThai (str) {
 }
 
 /**
- * 清洗关键词：去掉 emoji / 泰文 / 特殊符号，只保留中文+数字+字母
+ * 全角转半角
+ */
+function toHalfWidth (str) {
+  return str.replace(/[\uff01-\uff5e]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/\u3000/g, ' ')
+}
+
+/**
+ * 清洗关键词：去掉 emoji / 泰文 / 特殊符号，保留中文+数字+字母+必要特殊字符
  * 返回空字符串表示该词不可用
  */
 function cleanKeyword (kw) {
   if (!kw || typeof kw !== 'string') return ''
+  // 全角转半角
+  let s = toHalfWidth(kw)
   // 去 emoji（代理对、杂项符号等）
-  let s = kw.replace(/[\uD800-\uDFFF]|\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu, '')
+  s = s.replace(/[\uD800-\uDFFF]|\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu, '')
   // 去泰文
   s = s.replace(/[\u0E00-\u0E7F]+/g, ' ')
-  // 去括号内容（通常是促销描述："买4送2"）
-  s = s.replace(/[(\[【〔][^)\]】〕]*[)\]】〕]/g, ' ')
-  // 只保留中文、英文字母、数字、常见连字符
-  s = s.replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9\s-]/g, ' ')
+  // 保留常用单位、规格符号
+  s = s.replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9\s\-+*#%℃°./]/g, ' ')
   // 合并空格并裁剪
   s = s.replace(/\s+/g, ' ').trim()
   // 取前 30 字符
@@ -47,15 +112,31 @@ function cleanKeyword (kw) {
 }
 
 /**
- * 从清洗后的词中提取最精炼的搜索词（取最长的中文连续片段，最多12字）
+ * 从清洗后的词中提取多个核心中文短语，按权重排序（长度 + 位置优先级）
+ * 返回短语数组，按搜索价值从高到低排列
  */
-function extractCoreChinesePhrase (kw) {
+function extractCoreChinesePhrases (kw) {
   const cleaned = cleanKeyword(kw)
   const matches = cleaned.match(/[\u4e00-\u9fff\u3400-\u4dbf]{2,}/g)
-  if (!matches) return cleaned.slice(0, 20)
-  // 取最长的中文片段（最能代表品类）
-  matches.sort((a, b) => b.length - a.length)
-  return matches[0].slice(0, 12)
+  if (!matches) return [cleaned.slice(0, 20)].filter(Boolean)
+
+  // 计算权重：长度占70%，位置越靠前权重越高占30%
+  const weighted = matches.map((phrase, idx) => {
+    const lengthScore = phrase.length * 0.7
+    const positionScore = (matches.length - idx) * 0.3
+    return { phrase, score: lengthScore + positionScore }
+  })
+
+  // 按权重降序排序，去重
+  const seen = new Set()
+  return weighted
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.phrase.slice(0, 12))
+    .filter(phrase => {
+      if (seen.has(phrase) || phrase.length < 2) return false
+      seen.add(phrase)
+      return true
+    })
 }
 
 /**
@@ -64,29 +145,31 @@ function extractCoreChinesePhrase (kw) {
  * 并将结果回写到数据库，供后续匹配和展示使用。
  */
 async function extractSearchTerms (product) {
-  const db = require('../db/index')
-
   // 1. 尝试解析 DB 中已有的 keywords
   let stored = []
   try { stored = JSON.parse(product.keywords || '[]') } catch {}
 
-  // 清洗后的中文关键词
+  // 清洗后的中文关键词，去重
+  const seen = new Set()
   const cleanedStored = stored
     .map(k => cleanKeyword(k))
-    .filter(k => hasChinese(k) && k.length >= 2)
+    .filter(k => {
+      if (!hasChinese(k) || k.length < 2 || seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
 
   if (cleanedStored.length > 0) return cleanedStored
 
-  // 2. title_cn 本身如果是中文，可以直接用
+  // 2. title_cn 本身如果是中文，可以直接提取多个核心短语
   const titleCn = product.title_cn || ''
   if (hasChinese(titleCn) && !hasThai(titleCn)) {
-    const core = extractCoreChinesePhrase(titleCn)
-    if (core.length >= 2) return [core]
+    const cores = extractCoreChinesePhrases(titleCn)
+    if (cores.length > 0) return cores
   }
 
   // 3. 需要重新翻译
   logger.info('Keywords/title contain no Chinese, re-translating for 1688 match', { productId: product.id })
-  const { translateAll } = require('./TranslatorService')
   const sourceText = product.title_original || titleCn || ''
   if (!sourceText) return []
 
@@ -100,14 +183,20 @@ async function extractSearchTerms (product) {
       db.prepare("UPDATE shopee_products SET title_cn=?, keywords=?, updated_at=datetime('now') WHERE id=?")
         .run(newTitleCn, JSON.stringify(newKeywords), product.id)
 
+      // 清洗并去重关键词
+      const seenFresh = new Set()
       const fresh = newKeywords
         .map(k => cleanKeyword(k))
-        .filter(k => hasChinese(k) && k.length >= 2)
+        .filter(k => {
+          if (!hasChinese(k) || k.length < 2 || seenFresh.has(k)) return false
+          seenFresh.add(k)
+          return true
+        })
       if (fresh.length > 0) return fresh
 
       // keywords 仍然为空，用 title_cn 的核心中文短语
-      const core = extractCoreChinesePhrase(newTitleCn)
-      if (core.length >= 2) return [core]
+      const cores = extractCoreChinesePhrases(newTitleCn)
+      if (cores.length > 0) return cores
     }
   } catch (err) {
     logger.warn('Re-translation failed', { productId: product.id, error: err.message })
@@ -122,13 +211,17 @@ async function extractSearchTerms (product) {
 
 function buildHeaders (cookie) {
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': getRandomUA(),
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': 'https://www.1688.com/',
+    'Referer': 'https://s.1688.com/',
     'Connection': 'keep-alive',
-    'Cache-Control': 'no-cache'
+    'Cache-Control': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-site',
+    'Upgrade-Insecure-Requests': '1'
   }
   if (cookie) headers['Cookie'] = cookie
   return headers
@@ -165,45 +258,106 @@ function parseSuppliers (html) {
   const $ = cheerio.load(html)
   const suppliers = []
 
-  const $items = $('.list-item, [class*="offerlist-item"], .sm-offer-item, [data-offer-id]')
+  // 多套选择器适配不同页面结构
+  const itemSelectors = [
+    '.list-item', '[class*="offerlist-item"]', '.sm-offer-item',
+    '[data-offer-id]', '.offer-item', '.product-item', '.goods-item'
+  ]
+  const $items = $(itemSelectors.join(', '))
 
   $items.each((_, el) => {
     const $el = $(el)
 
-    const titleLink = $el.find('[class*="title"] a, .offer-title a, h2 a').first()
+    // 标题+链接：多选择器 fallback
+    const titleSelectors = [
+      '[class*="title"] a', '.offer-title a', 'h2 a', '.product-title a',
+      '.goods-title a', '[class*="name"] a'
+    ]
+    const titleLink = $el.find(titleSelectors.join(', ')).first()
     const title = titleLink.text().trim()
-    const rawHref = titleLink.attr('href') || $el.find('a[href*="1688.com"]').first().attr('href') || ''
+
+    const linkSelectors = [
+      'a[href*="1688.com"]', 'a[href*="offer/"]', 'a.item-link', 'a.product-link'
+    ]
+    const rawHref = titleLink.attr('href') || $el.find(linkSelectors.join(', ')).first().attr('href') || ''
     const product_url = rawHref.startsWith('http') ? rawHref : (rawHref ? `https:${rawHref}` : '')
 
-    const priceText = $el.find('[class*="price"], .price-text').first().text().replace(/[^0-9.]/g, '')
-    const price = parseFloat(priceText) || 0
+    // 价格解析：支持区间取最低价
+    const priceSelectors = [
+      '[class*="price"]', '.price-text', '.goods-price', '.product-price',
+      '[class*="cost"]', '[data-price]'
+    ]
+    const priceText = $el.find(priceSelectors.join(', ')).first().text()
+    // 匹配所有价格数字，取最小的
+    const priceMatches = priceText.match(/(\d+\.?\d*)/g)
+    const price = priceMatches && priceMatches.length > 0
+      ? Math.min(...priceMatches.map(p => parseFloat(p)).filter(Boolean))
+      : 0
 
-    const moqText = $el.find('[class*="moq"], [class*="min-order"], .trade-count').first().text()
-    const moqMatch = moqText.match(/\d+/)
-    const min_order = moqMatch ? parseInt(moqMatch[0]) : 1
+    // MOQ解析：增强正则，支持各种单位
+    const moqSelectors = [
+      '[class*="moq"]', '[class*="min-order"]', '.trade-count',
+      '.min-order-num', '[class*="起订"]', '.order-num'
+    ]
+    const moqText = $el.find(moqSelectors.join(', ')).first().text()
+    // 支持格式："≥2件", "起订量10", "MOQ 5PCS", "2起批"
+    const moqMatch = moqText.match(/(?:≥|>=|起订|起批|MOQ|min\s*order)?\s*(\d+)/i)
+    const min_order = moqMatch ? parseInt(moqMatch[1]) : 1
 
-    const shop_name = $el.find('.company-name a, [class*="company"] a, [class*="shop-name"]').first().text().trim()
+    // 店铺名称
+    const shopSelectors = [
+      '.company-name a', '[class*="company"] a', '[class*="shop-name"]',
+      '.store-name a', '.seller-name a'
+    ]
+    const shop_name = $el.find(shopSelectors.join(', ')).first().text().trim()
 
-    const scoreText = $el.find('[class*="score"], [class*="rating"], .rate-num').first().text()
+    // 店铺评分
+    const scoreSelectors = [
+      '[class*="score"]', '[class*="rating"]', '.rate-num',
+      '.shop-score', '[class*="信用"]'
+    ]
+    const scoreText = $el.find(scoreSelectors.join(', ')).first().text()
     const scoreMatch = scoreText.match(/[\d.]+/)
     const shop_score = scoreMatch ? parseFloat(scoreMatch[0]) : 0
 
-    const salesText = $el.find('[class*="sale"], [class*="sold"], .count-num').first().text()
-    const sales_30d = parseInt(salesText.replace(/[^0-9]/g, '')) || 0
+    // 销量解析：支持"1000+", "1.2万"等格式
+    const salesSelectors = [
+      '[class*="sale"]', '[class*="sold"]', '.count-num',
+      '.sales-volume', '[class*="成交"]', '[class*="销量"]'
+    ]
+    const salesText = $el.find(salesSelectors.join(', ')).first().text()
+    let sales_30d = 0
+    const salesMatch = salesText.match(/(\d+\.?\d*)\s*(\+|万|k|千)?/i)
+    if (salesMatch) {
+      sales_30d = parseFloat(salesMatch[1])
+      const unit = salesMatch[2]?.toLowerCase()
+      if (unit === '万' || unit === 'w') sales_30d *= 10000
+      if (unit === '千' || unit === 'k') sales_30d *= 1000
+    }
+    sales_30d = Math.round(sales_30d)
 
     // 标签提取：CSS选择器 + 全文关键词兜底
     const tags = []
-    $el.find('[class*="tag"], [class*="label"], [class*="badge"], [class*="icon-text"]').each((_, t) => {
+    const tagSelectors = [
+      '[class*="tag"]', '[class*="label"]', '[class*="badge"]',
+      '[class*="icon-text"]', '.service-tag', '.promotion-tag'
+    ]
+    $el.find(tagSelectors.join(', ')).each((_, t) => {
       const text = $(t).text().trim()
-      if (text && text.length <= 20) tags.push(text)
+      if (text && text.length <= 20 && !tags.includes(text)) tags.push(text)
     })
     const fullText = $el.text()
-    for (const kw of ['实力商家', '包邮', '天猫', '诚信通', '7天无理由']) {
+    for (const kw of ['实力商家', '包邮', '天猫', '诚信通', '7天无理由', '极速退款', '一件代发', '正品保障']) {
       if (fullText.includes(kw) && !tags.includes(kw)) tags.push(kw)
     }
 
-    const imgEl = $el.find('img[src*="alicdn"], img[src*="1688"], img[data-src]').first()
-    const rawImg = imgEl.attr('src') || imgEl.attr('data-src') || ''
+    // 图片提取
+    const imgSelectors = [
+      'img[src*="alicdn"]', 'img[src*="1688"]', 'img[data-src]',
+      'img.product-img', 'img.goods-img', 'img.item-img'
+    ]
+    const imgEl = $el.find(imgSelectors.join(', ')).first()
+    const rawImg = imgEl.attr('src') || imgEl.attr('data-src') || imgEl.attr('data-lazy') || ''
     const image_url = rawImg.startsWith('http') ? rawImg : (rawImg ? `https:${rawImg}` : '')
 
     if (title || product_url) {
@@ -220,15 +374,34 @@ async function searchByKeywordPuppeteer (keyword, pageNum, cookie, proxyUrl, bro
   try {
     // Lazily launch browser on first Puppeteer need
     if (!browserRef.instance) {
-      const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+      const args = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--start-maximized',
+        '--disable-infobars',
+        '--disable-extensions'
+      ]
       // Note: pass raw proxyUrl (e.g. "http://host:8080") — Chromium --proxy-server accepts host:port
       // This intentionally differs from ShopeeScraperService which strips the port (a limitation there)
       if (proxyUrl) args.push(`--proxy-server=${proxyUrl}`)
-      browserRef.instance = await puppeteer.launch({ headless: 'new', args })
+      browserRef.instance = await puppeteer.launch({
+        headless: 'new',
+        args,
+        defaultViewport: { width: 1920, height: 1080 }
+      })
     }
 
     page = await browserRef.instance.newPage()
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    // 随机User-Agent，反爬虫指纹
+    await page.setUserAgent(getRandomUA())
+    // 移除webdriver指纹
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+      window.chrome = { runtime: {} }
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] })
+      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] })
+    })
 
     // Inject 1688 cookie — leading dot covers s.1688.com and all subdomains
     if (cookie) {
@@ -260,17 +433,21 @@ async function searchByKeywordPuppeteer (keyword, pageNum, cookie, proxyUrl, bro
   }
 }
 
-async function searchByKeyword (keyword, maxPages, cookie, proxyUrl, browserRef = {}) {
+async function searchByKeyword (keyword, maxPages, proxyUrl, browserRef = {}) {
   const results = []
-  const headers = buildHeaders(cookie)
+  initCookiePool() // 初始化Cookie池
 
   for (let p = 1; p <= maxPages; p++) {
     const url = `https://s.1688.com/selloffer/offer_search.htm?keywords=${encodeURIComponent(keyword)}&n=y&page=${p}`
     try {
-      await retry(async () => {
+      await retry(async (retryCount) => {
+        // 每次请求用新的UA和Cookie
+        const cookie = getNextCookie()
+        const headers = buildHeaders(cookie)
+
         const axiosConfig = {
           url, method: 'GET', headers,
-          timeout: 20000, decompress: true, maxRedirects: 3
+          timeout: 25000, decompress: true, maxRedirects: 2
         }
         if (proxyUrl) {
           const u = new URL(proxyUrl)
@@ -281,6 +458,11 @@ async function searchByKeyword (keyword, maxPages, cookie, proxyUrl, browserRef 
         const html = typeof resp.data === 'string' ? resp.data : String(resp.data)
 
         if (isLoginRedirect(html)) {
+          // Cookie失效，尝试下一个Cookie
+          if (cookiePool.length > 1) {
+            logger.warn('Cookie returned login page, rotating to next cookie')
+            throw new Error('RETRY_WITH_NEW_COOKIE')
+          }
           throw new Error('LOGIN_REQUIRED: 1688 返回登录页，请在系统设置中配置有效的 1688 Cookie')
         }
 
@@ -296,8 +478,16 @@ async function searchByKeyword (keyword, maxPages, cookie, proxyUrl, browserRef 
         results.push(...items)
         logger.info(`1688 keyword="${keyword}" page ${p}: ${items.length} suppliers`)
 
-        if (p < maxPages) await sleep(1200 + Math.random() * 800)
-      }, { retries: 2, baseDelay: 2000 })
+        if (p < maxPages) await sleep(getRequestDelay())
+      }, {
+        retries: 3,
+        baseDelay: 2000,
+        onRetry: (n, e) => {
+          logger.warn(`1688 page ${p} retry ${n}`, { error: e.message })
+          // 失败时增加间隔
+          return sleep(getRequestDelay(n))
+        }
+      })
     } catch (err) {
       logger.warn(`1688 page ${p} failed`, { keyword, error: err.message })
       if (err.message.startsWith('LOGIN_REQUIRED')) throw err
@@ -346,7 +536,7 @@ async function matchProduct (product, callbacks = {}) {
       onProgress({ progress: 10 + i * 8, message: `搜索"${term}"...` })
 
       try {
-        const hits = await searchByKeyword(term, pages, alibabaCookie, proxyUrl, browserRef)
+        const hits = await searchByKeyword(term, pages, proxyUrl, browserRef)
         rawResults.push(...hits)
         logger.info(`Keyword "${term}": ${hits.length} raw results`)
       } catch (err) {
@@ -363,12 +553,19 @@ async function matchProduct (product, callbacks = {}) {
     if (browserRef.instance) await browserRef.instance.close().catch(() => {})
   }
 
-  // ── 3. 按 product_url 去重
-  const seen = new Set()
+  // ── 3. 智能去重：URL + 标题相似度 + 价格维度
+  const seenUrls = new Set()
+  const seenTitles = new Set()
   rawResults = rawResults.filter(s => {
-    const key = s.product_url || s.title
-    if (!key || seen.has(key)) return false
-    seen.add(key)
+    // 先按URL去重
+    if (s.product_url && seenUrls.has(s.product_url)) return false
+    if (s.product_url) seenUrls.add(s.product_url)
+
+    // 标题相似度去重：去掉特殊字符后比较核心内容
+    const cleanTitle = s.title.replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9]/g, '').toLowerCase()
+    if (cleanTitle.length > 10 && seenTitles.has(cleanTitle)) return false
+    if (cleanTitle.length > 10) seenTitles.add(cleanTitle)
+
     return true
   })
   logger.info(`Total unique raw results: ${rawResults.length}`, { productId: product.id })
@@ -388,7 +585,7 @@ async function matchProduct (product, callbacks = {}) {
 
   onProgress({ progress: 50, message: `过滤后 ${filtered.length} 个供应商，计算图片相似度...` })
 
-  // ── 5. 图片相似度打分
+  // ── 5. 图片相似度打分 + 综合评分
   const localImagePath = product.image_path
     ? path.join(__dirname, '../../', product.image_path)
     : null
@@ -400,7 +597,24 @@ async function matchProduct (product, callbacks = {}) {
       if (localImagePath && fs.existsSync(localImagePath) && s.image_url) {
         similarity = await computeSimilarity(localImagePath, s.image_url)
       }
-      const compositeScore = computeCompositeScore(similarity, s.shop_score, s.sales_30d)
+
+      // 计算价格比率：1688价格 / Shopee人民币价格（越低越有优势）
+      const priceRatio = s.price > 0 && shopeePriceCny > 0 ? s.price / shopeePriceCny : 1
+
+      // 解析标签
+      let tags = []
+      try {
+        tags = JSON.parse(s.tags || '[]')
+      } catch (_) {}
+
+      const compositeScore = computeCompositeScore(
+        similarity,
+        s.shop_score,
+        s.sales_30d,
+        s.min_order,
+        priceRatio,
+        tags
+      )
       const scoreDegraded = similarity < 0 ? 1 : 0
       onProgress({
         progress: 50 + Math.round((i + 1) / filtered.length * 45),

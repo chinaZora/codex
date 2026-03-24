@@ -19,7 +19,9 @@
                   @change="toggleAll"
                   style="margin-left:4px">全选</el-checkbox>
               </div>
-              <div style="display:flex;gap:8px">
+              <div style="display:flex;gap:8px;align-items:center">
+                <el-button size="small" @click="refreshProducts" :loading="refreshing" icon="Refresh">刷新</el-button>
+                <el-switch v-model="autoRefresh" :inline-prompt="true" active-text="自动刷新" inactive-text="" size="small" />
                 <el-button size="small" :disabled="checkedIds.length===0"
                   @click="resetMatch" :loading="resetting">
                   重置匹配({{ checkedIds.length }})
@@ -149,7 +151,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useCrawlStore } from '../stores/crawl'
 import { useMatchStore } from '../stores/match'
@@ -168,6 +170,9 @@ const currentProduct = ref(null)
 const checkedIds = ref([])
 const matching = ref(false)
 const resetting = ref(false)
+const refreshing = ref(false)
+const autoRefresh = ref(false)
+const autoRefreshInterval = ref(null)
 
 // 全选状态
 const isAllChecked = computed(() => products.value.length > 0 && checkedIds.value.length === products.value.length)
@@ -257,6 +262,51 @@ async function submitProfit () {
   })
   profitResult.value = res.data
 }
+
+// 手动刷新商品列表
+async function refreshProducts() {
+  refreshing.value = true
+  try {
+    const currentProductId = currentProduct.value?.id
+    await loadProducts()
+    // 刷新后保持选中之前的商品
+    if (currentProductId) {
+      const p = products.value.find(item => item.id === currentProductId)
+      if (p) selectProduct(p)
+    }
+    ElMessage.success('列表已刷新')
+  } finally {
+    refreshing.value = false
+  }
+}
+
+// 自动刷新监听
+watch(autoRefresh, (val) => {
+  if (val) {
+    // 每5秒自动刷新一次
+    autoRefreshInterval.value = setInterval(async () => {
+      await loadProducts()
+      // 如果有当前选中的商品，同步刷新供应商列表
+      if (currentProduct.value) {
+        await matchStore.loadSuppliers(currentProduct.value.id)
+      }
+    }, 5000)
+    ElMessage.success('已开启自动刷新，每5秒更新一次')
+  } else {
+    if (autoRefreshInterval.value) {
+      clearInterval(autoRefreshInterval.value)
+      autoRefreshInterval.value = null
+    }
+    ElMessage.info('已关闭自动刷新')
+  }
+})
+
+// 页面卸载时清除定时器
+onUnmounted(() => {
+  if (autoRefreshInterval.value) {
+    clearInterval(autoRefreshInterval.value)
+  }
+})
 </script>
 
 <style scoped>
