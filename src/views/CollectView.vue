@@ -29,6 +29,13 @@
             <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="采集方式">
+          <el-select v-model="form.crawlMethod" style="width:200px">
+            <el-option label="直接页面抓取（推荐）" value="web" />
+            <el-option label="API通道获取" value="api" />
+            <el-option label="Apify平台获取" value="apify" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="crawling" @click="startCrawl" style="background:#ee4d2d;border-color:#ee4d2d">
             {{ crawling ? '采集中...' : '开始采集' }}
@@ -96,6 +103,11 @@
             <el-tag :type="statusType(row.match_status)" size="small">{{ statusLabel(row.match_status) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="拉取时间" width="160" prop="created_at" sortable>
+          <template #default="{row}">
+            <span style="font-size:12px;color:#666">{{ row.created_at?.slice(0, 16).replace('T', ' ') || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{row}">
             <el-button size="small" type="primary" link @click="openProduct(row)">查看详情</el-button>
@@ -140,7 +152,7 @@ const router = useRouter()
 const crawlStore = useCrawlStore()
 const matchStore = useMatchStore()
 
-const form = ref({ keyword: '', sortBy: 'sales', pages: 2, accountId: null })
+const form = ref({ keyword: '', sortBy: 'sales', pages: 2, accountId: null, crawlMethod: 'web' })
 const accounts = ref([])
 const crawling = ref(false)
 const currentJobId = ref(null)
@@ -170,7 +182,7 @@ async function startCrawl () {
   if (!form.value.keyword) return ElMessage.warning('请输入搜索关键词')
   crawling.value = true
   try {
-    currentJobId.value = await crawlStore.startCrawl(form.value.keyword, form.value.sortBy, form.value.pages, form.value.accountId)
+    currentJobId.value = await crawlStore.startCrawl(form.value.keyword, form.value.sortBy, form.value.pages, form.value.accountId, form.value.crawlMethod)
     ElMessage.success('采集任务已启动')
     // 定时刷新商品列表
     const timer = setInterval(async () => {

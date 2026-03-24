@@ -342,8 +342,100 @@ async function downloadImage (imageUrl, productId) {
 }
 
 /**
+ * 从Apify平台拉取商品
+ */
+async function fetchFromApify(keyword, pagesToCrawl, proxyUrl) {
+  const apiToken = getConfig('apify_api_token')
+  const actorId = getConfig('apify_actor_id') || 'best_scraper/shopee-scraper'
+
+  if (!apiToken) throw new Error('请先在系统设置中配置Apify API Token')
+
+  logger.info(`Starting Apify scrape for keyword="${keyword}", pages=${pagesToCrawl}`)
+
+  try {
+    // 1. 创建Actor运行任务
+    const runResp = await axios.post(
+      `https://api.apify.com/v2/acts/${actorId}/runs?token=${apiToken}`,
+      {
+        keyword,
+        countryCode: 'TH',
+        language: 'th',
+        maxItemsPerPage: 60,
+        maxPages: pagesToCrawl,
+        proxyConfiguration: {
+          useApifyProxy: true,
+          apifyProxyGroups: ['SHOPEE', 'RESIDENTIAL']
+        },
+        extendOutputFunction: `({ item }) => {
+          return {
+            title: item.title,
+            url: item.url,
+            mainImage: item.mainImage,
+            price: item.price,
+            priceCurrency: item.priceCurrency,
+            sold: item.sold,
+            rating: item.rating,
+            itemId: item.itemId,
+            shopId: item.shopId
+          }
+        }`
+      },
+      {
+        timeout: 60000,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    )
+
+    const runId = runResp.data.data.id
+    logger.info(`Apify run created: ${runId}`)
+
+    // 2. 轮询任务状态直到完成（最长等待10分钟）
+    let runStatus = 'RUNNING'
+    for (let i = 0; i < 60; i++) {
+      await sleep(10000) // 每10秒检查一次
+      const statusResp = await axios.get(
+        `https://api.apify.com/v2/actor-runs/${runId}?token=${apiToken}`,
+        { timeout: 15000 }
+      )
+      runStatus = statusResp.data.data.status
+      logger.info(`Apify run ${runId} status: ${runStatus}`)
+      if (runStatus === 'SUCCEEDED' || runStatus === 'FAILED' || runStatus === 'ABORTED') break
+    }
+
+    if (runStatus !== 'SUCCEEDED') throw new Error(`Apify任务运行失败: ${runStatus}`)
+
+    // 3. 获取运行结果
+    const resultResp = await axios.get(
+      `https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${apiToken}&limit=1000`,
+      { timeout: 30000 }
+    )
+
+    logger.info(`Apify returned ${resultResp.data.length} products`)
+
+    // 4. 转换为系统统一的商品格式
+    const exchangeRate = parseFloat(getConfig('exchange_rate') || '0.19')
+    return resultResp.data.map(item => ({
+      title_original: item.title || '',
+      productUrl: item.url || '',
+      imageUrl: item.mainImage || '',
+      priceThb: parseFloat(item.price) || 0,
+      sales: parseInt(item.sold) || 0,
+      rating: parseFloat(item.rating) || 0,
+      itemId: item.itemId || '',
+      shopId: item.shopId || '',
+      title_cn: '',
+      keywords: [],
+      price_cny: parseFloat(((item.price || 0) * exchangeRate).toFixed(2))
+    }))
+  } catch (err) {
+    logger.error('Apify scrape failed', { error: err.message, response: err.response?.data })
+    throw new Error(`Apify采集失败: ${err.message}`)
+  }
+}
+
+/**
  * 主采集函数
- * @param {Object} job - { id, keyword, sort_by, url, pages_to_crawl, account_id }
+ * @param {Object} job - { id, keyword, sort_by, url, pages_to_crawl, account_id, crawl_method }
  * @param {Object} callbacks - { onProgress, isCancelled }
  */
 async function scrapeShopee (job, callbacks = {}) {
@@ -351,6 +443,18 @@ async function scrapeShopee (job, callbacks = {}) {
   const proxyUrl = getConfig('proxy_url') || ''
   const baseDelay = parseInt(getConfig('crawl_page_delay_ms') || '2000')
   const exchangeRate = parseFloat(getConfig('exchange_rate') || '0.19')
+
+  // 按采集方式选择对应的实现
+  if (job.crawl_method === 'apify') {
+    onProgress({ progress: 10, done: 0, message: '已提交Apify采集任务，等待执行...' })
+    const products = await fetchFromApify(job.keyword, job.pages_to_crawl, proxyUrl)
+    onProgress({ progress: 100, done: products.length, message: `Apify采集完成，共 ${products.length} 件` })
+    return products
+  } else if (job.crawl_method === 'api') {
+    throw new Error('API通道采集功能开发中，请选择其他采集方式')
+  }
+
+  // 原有本地Puppeteer采集逻辑
 
   // 查询账号 Cookie（若有）
   const extraHeaders = {}
