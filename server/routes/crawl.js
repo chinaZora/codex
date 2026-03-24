@@ -7,13 +7,15 @@ const { createCrawlJob, cancelCrawlJob } = require('../scheduler/crawlWorker')
 
 // POST /api/crawl/start — 创建采集任务
 router.post('/start', (req, res) => {
-  const { keyword, sortBy = 'sales', pagesToCrawl = 2, accountId } = req.body
+  const { keyword, sortBy = 'sales', pagesToCrawl = 2, accountId, crawlMethod = 'web' } = req.body
   if (!keyword) return res.status(400).json({ code: 400, message: '请提供搜索关键词' })
   if (typeof keyword === 'string' && keyword.length > 200) {
     return res.status(400).json({ code: 400, message: '关键词最多 200 个字符' })
   }
+  const validMethods = ['web', 'api', 'apify']
+  const method = validMethods.includes(crawlMethod) ? crawlMethod : 'web'
   const pages = Math.min(Math.max(parseInt(pagesToCrawl) || 2, 1), 10)
-  const jobId = createCrawlJob({ keyword, sortBy, pagesToCrawl: pages, accountId: accountId || null })
+  const jobId = createCrawlJob({ keyword, sortBy, pagesToCrawl: pages, accountId: accountId || null, crawlMethod: method })
   res.json({ code: 200, data: { jobId }, message: '采集任务已创建' })
 })
 

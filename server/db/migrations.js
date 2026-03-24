@@ -126,6 +126,8 @@ function runMigrations () {
     proxy_url: '',
     alibaba_cookie: '',
     crawl_page_delay_ms: '3000',
+    apify_api_token: '',
+    apify_actor_id: 'vdrmota/shopee-scraper',
     default_packaging_cost: '5',
     default_shipping_cost: '0',
     platform_fee_pct: '0.02'
@@ -158,6 +160,13 @@ function runMigrations () {
   // 迁移：为已存在的数据库添加 keyword 列（新建时 DDL 已包含）
   try {
     db.exec("ALTER TABLE crawl_jobs ADD COLUMN keyword TEXT")
+  } catch (e) {
+    // 列已存在则忽略
+  }
+
+  // 迁移：添加采集方式列
+  try {
+    db.exec("ALTER TABLE crawl_jobs ADD COLUMN crawl_method TEXT DEFAULT 'web'")
   } catch (e) {
     // 列已存在则忽略
   }

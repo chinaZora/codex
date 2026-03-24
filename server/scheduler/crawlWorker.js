@@ -11,12 +11,12 @@ const runningJobs = new Map() // jobId → { cancelled: false }
 /**
  * 创建采集任务
  */
-function createCrawlJob ({ keyword, sortBy = 'sales', pagesToCrawl = 2, accountId = null }) {
+function createCrawlJob ({ keyword, sortBy = 'sales', pagesToCrawl = 2, accountId = null, crawlMethod = 'web' }) {
   const id = uuidv4()
   const url = `https://shopee.co.th/search?keyword=${encodeURIComponent(keyword)}&sortBy=${sortBy}`
   db.prepare(
-    'INSERT INTO crawl_jobs (id, account_id, keyword, url, pages_to_crawl, status) VALUES (?,?,?,?,?,?)'
-  ).run(id, accountId, keyword, url, pagesToCrawl, 'pending')
+    'INSERT INTO crawl_jobs (id, account_id, keyword, url, pages_to_crawl, status, crawl_method) VALUES (?,?,?,?,?,?,?)'
+  ).run(id, accountId, keyword, url, pagesToCrawl, 'pending', crawlMethod)
   return id
 }
 

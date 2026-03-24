@@ -68,6 +68,14 @@
               登录 1688.com / 1688手机版，按 F12 → Network → 任意请求 → Request Headers → 复制 cookie 字段全文
             </div>
           </el-form-item>
+          <el-form-item label="Apify API Token">
+            <el-input v-model="cfg.apify_api_token" placeholder="apify_api_..." show-password style="width:360px" />
+            <span style="margin-left:8px;color:#999;font-size:13px">用于Apify平台采集Shopee商品</span>
+          </el-form-item>
+          <el-form-item label="Apify Actor ID">
+            <el-input v-model="cfg.apify_actor_id" placeholder="best_scraper/shopee-scraper" style="width:360px" />
+            <span style="margin-left:8px;color:#999;font-size:13px">默认值：best_scraper/shopee-scraper</span>
+          </el-form-item>
         </el-form>
       </el-card>
 
@@ -214,6 +222,8 @@ const cfg = ref({
   proxy_url: '',
   alibaba_cookie: '',
   crawl_page_delay_ms: 1500,
+  apify_api_token: '',
+  apify_actor_id: 'vdrmota/shopee-scraper',
   default_packaging_cost: 5,
   default_shipping_cost: 0,
   platform_fee_pct: 2,
